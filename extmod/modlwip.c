@@ -750,6 +750,12 @@ static mp_uint_t lwip_tcp_send(lwip_socket_obj_t *socket, const byte *buf, mp_ui
         if (err != ERR_MEM) {
             break;
         }
+        // Honour non-blocking mode: don't sleep/retry when queue memory is exhausted.
+        if (socket->timeout == 0) {
+            MICROPY_PY_LWIP_EXIT
+            *_errno = MP_EAGAIN;
+            return MP_STREAM_ERROR;
+        }
         err = tcp_output(socket->pcb.tcp);
         if (err != ERR_OK) {
             break;
