@@ -165,6 +165,10 @@
 #ifndef MICROPY_PY_NETWORK_PPP_LWIP
 #define MICROPY_PY_NETWORK_PPP_LWIP     (0)
 #endif
+
+#ifndef MICROPY_PY_NETPROBE
+#define MICROPY_PY_NETPROBE             (0)
+#endif
 #endif
 
 // fatfs configuration used in ffconf.h

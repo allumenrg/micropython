@@ -329,7 +329,11 @@ static void wiznet5k_lwip_init(wiznet5k_obj_t *self) {
     netif_add(&self->netif, ip_2_ip4(&ipconfig[0]), ip_2_ip4(&ipconfig[1]), ip_2_ip4(&ipconfig[2]), self, wiznet5k_netif_init, ethernet_input);
     self->netif.name[0] = 'e';
     self->netif.name[1] = '0';
-    netif_set_default(&self->netif);
+    // Do not steal default route from an active Wi-Fi (or other) netif; Python
+    // commits eth via netprobe.set_default_netif() after a successful probe.
+    if (netif_default == NULL) {
+        netif_set_default(&self->netif);
+    }
     dns_setserver(0, &ipconfig[3]);
     dhcp_set_struct(&self->netif, &self->dhcp_struct);
     // Setting NETIF_FLAG_UP then clearing it is a workaround for dhcp_start and the
