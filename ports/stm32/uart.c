@@ -679,6 +679,18 @@ bool uart_init(machine_uart_obj_t *uart_obj,
     // Initialise the UART hardware.
     HAL_UART_Init(&huart);
 
+    #if defined(STM32H7)
+    // Enable the RX/TX FIFOs.  On H7 (unlike G4) HAL_UART_Init() does not apply
+    // huart.FifoMode; UART_SetConfig() actually clears FIFOEN, and hal_uart_ex.c
+    // (HAL_UARTEx_EnableFifoMode) is not part of this build, so set FIFOEN directly.
+    // FIFOEN can only be changed while the UART is disabled.  With the FIFO on,
+    // RXNE means "RX FIFO not empty" and TXE means "TX FIFO not full", and the IRQ
+    // handler drains the whole RX FIFO on each RXNE interrupt.
+    uart_obj->uartx->CR1 &= ~USART_CR1_UE;
+    uart_obj->uartx->CR1 |= USART_CR1_FIFOEN;
+    uart_obj->uartx->CR1 |= USART_CR1_UE;
+    #endif
+
     // Disable all individual UART IRQs, but enable the global handler
     uart_obj->uartx->CR1 &= ~USART_CR1_IE_ALL;
     uart_obj->uartx->CR2 &= ~USART_CR2_IE_ALL;
@@ -1141,6 +1153,11 @@ size_t uart_tx_data(machine_uart_obj_t *self, const void *src_in, size_t num_cha
     // timeout_char by FIFO size + 1.
     // STM32G4 has 8 words FIFO.
     timeout = (8 + 1) * self->timeout_char;
+    #elif defined(STM32H7)
+    // With the FIFO enabled the final chars can sit in a full FIFO, so the timeout
+    // (used both between chars and for the final TC wait) must allow the whole FIFO
+    // to drain.  STM32H7 has a 16 word FIFO.
+    timeout = (16 + 1) * self->timeout_char;
     #else
     // The timeout specified here is for waiting for the TX data register to
     // become empty (ie between chars), as well as for the final char to be
@@ -1213,14 +1230,21 @@ void uart_irq_handler(mp_uint_t uart_id) {
     bool rxne_is_set = self->mp_irq_flags & USART_ISR_RXNE;
     #endif
 
-    // Process RXNE flag, either read the character or disable the interrupt.
+    // Process RXNE flag: drain the RX FIFO (or the single RDR when no FIFO) into
+    // the ring buffer.  With the FIFO enabled, RXNE is really RXFNE ("RX FIFO not
+    // empty") so several characters may be pending; keep reading while RXNE stays
+    // set.  Without a FIFO this simply reads the one available character.
     if (rxne_is_set) {
         if (self->read_buf_len != 0) {
-            uint16_t next_head = (self->read_buf_head + 1) % self->read_buf_len;
-            if (next_head != self->read_buf_tail) {
-                // only read data if room in buf
+            do {
+                uint16_t next_head = (self->read_buf_head + 1) % self->read_buf_len;
+                if (next_head == self->read_buf_tail) {
+                    // No room: leave the remaining char(s) in the FIFO, disable interrupt
+                    UART_RXNE_IT_DIS(self->uartx);
+                    break;
+                }
                 #if defined(STM32F0) || defined(STM32F7) || defined(STM32G0) || defined(STM32G4) || defined(STM32H5) || defined(STM32H7) || defined(STM32L0) || defined(STM32L4) || defined(STM32WB) || defined(STM32WL)
-                int data = self->uartx->RDR; // clears UART_FLAG_RXNE
+                int data = self->uartx->RDR; // clears UART_FLAG_RXNE, pops one char from the FIFO
                 #else
                 self->mp_irq_flags = self->uartx->SR; // resample to get any new flags since next read of DR will clear SR
                 int data = self->uartx->DR; // clears UART_FLAG_RXNE
@@ -1238,9 +1262,7 @@ void uart_irq_handler(mp_uint_t uart_id) {
                     }
                     self->read_buf_head = next_head;
                 }
-            } else { // No room: leave char in buf, disable interrupt
-                UART_RXNE_IT_DIS(self->uartx);
-            }
+            } while (UART_RXNE_IS_SET(self->uartx));
         } else {
             // No buffering, disable interrupt.
             UART_RXNE_IT_DIS(self->uartx);
